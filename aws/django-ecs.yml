@@ -1,0 +1,634 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Django ECS Tasks, Cluster, Services, ALB
+
+Parameters:
+
+  ################################################################################
+  # ECS TASKS
+  RepositoryName:
+    Description: Docker Repository Name on ECR
+    Type: String
+    Default: "django-demo"
+
+
+  ################################################################################
+  # ECS CLUSTER
+  EnvironmentName:
+    Description: Environment name that will be prefixed to resource names
+    Type: String
+    Default: "django-demo"
+
+  ECSClusterSize:
+    Description: How many ECS hosts do you want to initially deploy?
+    Type: Number
+    Default: 2
+
+  ECSInstanceType:
+    Description: Which instance type should we use to build the ECS cluster?
+    Type: String
+    Default: t2.small
+
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the ECS EC2 instances
+    Type: AWS::EC2::KeyPair::KeyName
+
+  VPC:
+    Description: Choose which VPC this ECS cluster should be deployed to
+    Type: AWS::EC2::VPC::Id
+
+  VPCSubnets:
+    Description: Choose which subnets this ECS cluster should be deployed to
+    Type: List<AWS::EC2::Subnet::Id>
+
+  ################################################################################
+  # ALB
+
+
+  ################################################################################
+  # ECS Services
+
+  CountServiceApp:
+    Description: How many APP containers should we deploy to EC2?
+    Type: Number
+    Default: 0
+
+
+Mappings:
+
+  ################################################################################
+  # ECS CLUSTER
+
+  # You must update these mappings from time to time.
+  # These are the latest ECS optimized AMIs as of August 2018:
+  #
+  #   amzn-ami-2018.03.d-amazon-ecs-optimized
+  #   ECS agent:    1.20.0
+  #   Docker:       18.03.1-ce
+  #   ecs-init:     1.20.0-1
+  #
+  # You can find the latest available on this page of our documentation:
+  # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-optimized_AMI.html
+  # (note the AMI identifier is region specific)
+
+  AWSRegionToAMI:
+    us-east-1:
+      AMI: ami-112e366e
+    us-east-2:
+      AMI: ami-0e65e665ff5f3fc5f
+    us-west-1:
+      AMI: ami-dd0de2be
+    us-west-2:
+      AMI: ami-a1f8dfd9
+
+
+Resources:
+
+  ################################################################################
+  # ECS TASKS
+  EcsTaskExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        -
+          Effect: "Allow"
+          Principal:
+            Service:
+            - "ecs-tasks.amazonaws.com"
+          Action:
+          - "sts:AssumeRole"
+      ManagedPolicyArns:
+      -
+        "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      Path: "/"
+#      RoleName: "ecsTaskExecutionRole"
+#      Description: Role that the ECS container agent and Docker daemon can assume
+
+  EcsTaskRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        -
+          Effect: "Allow"
+          Principal:
+            Service:
+            - "ecs-tasks.amazonaws.com"
+          Action:
+          - "sts:AssumeRole"
+      Path: "/"
+#      RoleName: "ecsTaskRole"
+#      Description: Role that containers in the task can assume
+
+  # Serve Django Web Application on HTTP (80/tcp)
+  AppTask:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      # EC2 CPU has 1024 slices. Minimum "128" slices is 1/8 of a CPU.
+      Cpu: "128"
+      # EC2 Memory is in megabytes. No minimum? "384" megabytes is 3/8 gigabyte.
+      Memory: "384"
+      ExecutionRoleArn: !GetAtt EcsTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      RequiresCompatibilities:
+      - "EC2"
+      ContainerDefinitions:
+      -
+        Name: "django_app"
+        #Image: "123456789012.dkr.ecr.us-east-1.amazonaws.com/django-demo:latest"
+        Image: !Join [ ":", [ !Join [ ".", [ !Ref "AWS::AccountId", "dkr.ecr", !Ref "AWS::Region", !Join [ "/", [ "amazonaws.com", !Ref RepositoryName ] ] ] ], "latest" ] ]
+        Essential: "true"
+        LogConfiguration:
+          LogDriver: "awslogs"
+          Options:
+            #"awslogs-group": "django-demo-/ecs/app"
+            "awslogs-group": !Join [ "-", [ !Ref EnvironmentName, "/ecs/app" ] ]
+            "awslogs-region": "us-east-1"
+            "awslogs-stream-prefix": "ecs"
+        PortMappings:
+          -
+            ContainerPort: 8000
+            HostPort: 0
+            Protocol: "tcp"
+
+  LogGroupApp:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      #LogGroupName: "django-demo-/ecs/app"
+      LogGroupName: !Join [ "-", [ !Ref EnvironmentName, "/ecs/app" ] ]
+      RetentionInDays: 14
+
+  ################################################################################
+  # ECS CLUSTER
+
+  # ECS Agent will automatically create these Log Groups.
+  # By creating them in the Cloud Formation template, they will be removed if we delete the stack.
+
+  LogGroupVarLogDmesg:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      #LogGroupName: django-demo-/var/log/dmesg
+      LogGroupName: !Join [ "-", [ !Ref EnvironmentName, "/var/log/dmesg" ] ]
+      RetentionInDays: 14
+
+  LogGroupVarLogDocker:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      #LogGroupName: django-demo-/var/log/docker
+      LogGroupName: !Join [ "-", [ !Ref EnvironmentName, "/var/log/docker" ] ]
+      RetentionInDays: 14
+
+  LogGroupVarLogMessages:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      #LogGroupName: django-demo-/var/log/messages
+      LogGroupName: !Join [ "-", [ !Ref EnvironmentName, "/var/log/messages" ] ]
+      RetentionInDays: 14
+
+  LogGroupVarLogEcsAudit:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      #LogGroupName: django-demo-/var/log/ecs/audit.log
+      LogGroupName: !Join [ "-", [ !Ref EnvironmentName, "/var/log/ecs/audit.log" ] ]
+      RetentionInDays: 14
+
+  LogGroupVarLogEcsAgent:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      #LogGroupName: django-demo-/var/log/ecs/ecs-agent.log
+      LogGroupName: !Join [ "-", [ !Ref EnvironmentName, "/var/log/ecs/ecs-agent.log" ] ]
+      RetentionInDays: 14
+
+
+  ECSClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VPC
+      GroupDescription: Inbound and Outbound rules for ECS cluster
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 172.31.0.0/16
+        Description: "ssh (internal admin)"
+      - IpProtocol: tcp
+        FromPort: '32768'
+        ToPort: "60999"
+        CidrIp: 172.31.0.0/16
+        Description: "http (docker dynamic ports)"
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref EnvironmentName
+
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref VPCSubnets
+      LaunchConfigurationName: !Ref ECSLaunchConfiguration
+      MinSize: !Ref ECSClusterSize
+      MaxSize: !Ref ECSClusterSize
+      DesiredCapacity: !Ref ECSClusterSize
+      Tags:
+      - Key: Name
+        Value: !Sub ${EnvironmentName} ECS host
+        PropagateAtLaunch: true
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT15M
+        SuspendProcesses:
+        - HealthCheck
+        - ReplaceUnhealthy
+        - AZRebalance
+        - AlarmNotification
+        - ScheduledActions
+        WaitOnResourceSignals: true
+
+  ECSLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId:  !FindInMap [AWSRegionToAMI, !Ref "AWS::Region", AMI]
+      InstanceType: !Ref ECSInstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+      - !Ref ECSClusterSecurityGroup
+      IamInstanceProfile: !Ref ECSInstanceProfile
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash
+          yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+          yum install -y aws-cfn-bootstrap hibagent
+          /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSLaunchConfiguration
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSAutoScalingGroup
+          /usr/bin/enable-ec2-spot-hibernation
+
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          packages:
+            yum:
+              awslogs: []
+
+          commands:
+            01_add_instance_to_cluster:
+              command: !Sub echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              mode: 000400
+              owner: root
+              group: root
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.ECSLaunchConfiguration.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource ECSLaunchConfiguration
+            "/etc/awslogs/awscli.conf":
+              content: !Sub |
+                [plugins]
+                cwlogs = cwlogs
+                [default]
+                region = ${AWS::Region}
+            "/etc/awslogs/awslogs.conf":
+              content: !Sub |
+                [general]
+                state_file = /var/lib/awslogs/agent-state
+                [/var/log/dmesg]
+                file = /var/log/dmesg
+                log_group_name = ${ECSCluster}-/var/log/dmesg
+                log_stream_name = ${ECSCluster}
+                [/var/log/messages]
+                file = /var/log/messages
+                log_group_name = ${ECSCluster}-/var/log/messages
+                log_stream_name = ${ECSCluster}
+                datetime_format = %b %d %H:%M:%S
+                [/var/log/docker]
+                file = /var/log/docker
+                log_group_name = ${ECSCluster}-/var/log/docker
+                log_stream_name = ${ECSCluster}
+                datetime_format = %Y-%m-%dT%H:%M:%S.%f
+                [/var/log/ecs/ecs-init.log]
+                file = /var/log/ecs/ecs-init.log.*
+                log_group_name = ${ECSCluster}-/var/log/ecs/ecs-init.log
+                log_stream_name = ${ECSCluster}
+                datetime_format = %Y-%m-%dT%H:%M:%SZ
+                [/var/log/ecs/ecs-agent.log]
+                file = /var/log/ecs/ecs-agent.log.*
+                log_group_name = ${ECSCluster}-/var/log/ecs/ecs-agent.log
+                log_stream_name = ${ECSCluster}
+                datetime_format = %Y-%m-%dT%H:%M:%SZ
+                [/var/log/ecs/audit.log]
+                file = /var/log/ecs/audit.log.*
+                log_group_name = ${ECSCluster}-/var/log/ecs/audit.log
+                log_stream_name = ${ECSCluster}
+                datetime_format = %Y-%m-%dT%H:%M:%SZ
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                - /etc/cfn/cfn-hup.conf
+                - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+              awslogs:
+                enabled: true
+                ensureRunning: true
+                files:
+                - /etc/awslogs/awslogs.conf
+                - /etc/awslogs/awscli.conf
+
+  # This IAM Role is attached to all of the ECS hosts. It is based on the default role
+  # published here:
+  # http://docs.aws.amazon.com/AmazonECS/latest/developerguide/instance_IAM_role.html
+  #
+  # You can add other IAM policy statements here to allow access from your ECS hosts
+  # to other AWS services. Please note that this role will be used by ALL containers
+  # running on the ECS host.
+
+  ECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      RoleName: !Sub ${EnvironmentName}-ECSRole-${AWS::Region}
+      AssumeRolePolicyDocument: |
+        {
+            "Statement": [{
+                "Action": "sts:AssumeRole",
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": "ec2.amazonaws.com"
+                }
+            }]
+        }
+      Policies:
+      - PolicyName: !Sub ${EnvironmentName}-ecs-service
+        PolicyDocument: |
+          {
+              "Statement": [{
+                  "Effect": "Allow",
+                  "Action": [
+                      "ecs:CreateCluster",
+                      "ecs:DeregisterContainerInstance",
+                      "ecs:DiscoverPollEndpoint",
+                      "ecs:Poll",
+                      "ecs:RegisterContainerInstance",
+                      "ecs:StartTelemetrySession",
+                      "ecs:Submit*",
+                      "logs:CreateLogStream",
+                      "logs:PutLogEvents",
+                      "ecr:BatchCheckLayerAvailability",
+                      "ecr:BatchGetImage",
+                      "ecr:GetDownloadUrlForLayer",
+                      "ecr:GetAuthorizationToken",
+                      "ssm:DescribeAssociation",
+                      "ssm:GetDeployablePatchSnapshotForInstance",
+                      "ssm:GetDocument",
+                      "ssm:GetManifest",
+                      "ssm:GetParameters",
+                      "ssm:ListAssociations",
+                      "ssm:ListInstanceAssociations",
+                      "ssm:PutInventory",
+                      "ssm:PutComplianceItems",
+                      "ssm:PutConfigurePackageResult",
+                      "ssm:UpdateAssociationStatus",
+                      "ssm:UpdateInstanceAssociationStatus",
+                      "ssm:UpdateInstanceInformation",
+                      "ec2messages:AcknowledgeMessage",
+                      "ec2messages:DeleteMessage",
+                      "ec2messages:FailMessage",
+                      "ec2messages:GetEndpoint",
+                      "ec2messages:GetMessages",
+                      "ec2messages:SendReply",
+                      "cloudwatch:PutMetricData",
+                      "ec2:DescribeInstanceStatus",
+                      "ds:CreateComputer",
+                      "ds:DescribeDirectories",
+                      "logs:CreateLogGroup",
+                      "logs:CreateLogStream",
+                      "logs:DescribeLogGroups",
+                      "logs:DescribeLogStreams",
+                      "logs:PutLogEvents",
+                      "s3:PutObject",
+                      "s3:GetObject",
+                      "s3:AbortMultipartUpload",
+                      "s3:ListMultipartUploadParts",
+                      "s3:ListBucket",
+                      "s3:ListBucketMultipartUploads"
+                  ],
+                  "Resource": "*"
+              }]
+          }
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+      - !Ref ECSRole
+
+  ECSServiceAutoScalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          Action:
+          - 'sts:AssumeRole'
+          Effect: Allow
+          Principal:
+            Service:
+            - application-autoscaling.amazonaws.com
+      Path: /
+      Policies:
+      - PolicyName: !Sub ${EnvironmentName}-ecs-service-autoscaling
+        PolicyDocument:
+          Statement:
+            Effect: Allow
+            Action:
+            - application-autoscaling:*
+            - cloudwatch:DescribeAlarms
+            - cloudwatch:PutMetricAlarm
+            - ecs:DescribeServices
+            - ecs:UpdateService
+            Resource: "*"
+
+
+  ################################################################################
+  # ALB
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VPC
+      GroupDescription: Inbound and Outbound rules for ECS cluster
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+        Description: "Public HTTP"
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: "443"
+        CidrIp: 0.0.0.0/0
+        Description: "Public HTTPS"
+
+  ALBDjango:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: application
+      IpAddressType: ipv4
+      Scheme: internet-facing
+      SecurityGroups:
+      - Ref: ALBSecurityGroup
+      Subnets: !Ref VPCSubnets
+      LoadBalancerAttributes:
+      - Key: idle_timeout.timeout_seconds
+        Value: '60'
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn:
+    - ALBDjango
+    Properties:
+      Protocol: HTTP
+      Port: 80
+      TargetType: instance
+      VpcId: !Ref VPC
+      TargetGroupAttributes:
+      - Key: deregistration_delay.timeout_seconds
+        Value: '60'
+      HealthCheckProtocol: HTTP
+#      HealthCheckPath: "/_health"
+      HealthCheckPath: "/"
+      HealthyThresholdCount: 5
+      UnhealthyThresholdCount: 2
+      HealthCheckTimeoutSeconds: 5
+      HealthCheckIntervalSeconds: 30
+      Matcher:
+        HttpCode: 200-299
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+    - ALBDjango
+    - ALBTargetGroup
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref ALBTargetGroup
+      LoadBalancerArn:
+        Ref: ALBDjango
+      Port: 80
+      Protocol: HTTP
+
+
+  ################################################################################
+  # ECS Services
+  AppServiceECS:
+    Type: AWS::ECS::Service
+    DependsOn:
+    - AppTask
+    - ALBTargetGroup
+    Properties:
+      Cluster: !Ref ECSCluster
+      #TaskDefinition: arn:aws:ecs:us-east-1:123456789012:task-definition/django-ecs-AppTask-3ZLD5PUALZGU:1
+      TaskDefinition: !Ref AppTask
+      DesiredCount: !Ref CountServiceApp
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 50
+        MaximumPercent: 200
+      HealthCheckGracePeriodSeconds: 0
+      LoadBalancers:
+      - ContainerName: "django_app"
+        ContainerPort: "8000"
+        TargetGroupArn: !Ref ALBTargetGroup
+      PlacementStrategies:
+      - Type: spread
+        Field: attribute:ecs.availability-zone
+      - Type: spread
+        Field: instanceId
+#      Role: "ecsServiceRole"
+
+      # CloudFormation can not create the "ecsServiceRole" service linked role.
+      # If your account does NOT contain this "ecsServiceRole" Service Roll, you must go to the
+      # AWS Web Console and manually create this service roll by following these steps:
+      #
+      # 1. AWS Web Console > IAM > Roles > Create Role
+      # 2. AWS Service > Elastic Container Service > EC2 Role for Elastic Container Service
+      # 3. Attached Permission Policy: AmazonEC2ContainerServiceforEC2Role
+      # 4. Save
+
+
+  SecurityGroupFargateServiceECS:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VPC
+      GroupDescription: Inbound and Outbound rules for ECS Fargate Service
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+        Description: "HTTP to Public Internet"
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: "443"
+        CidrIp: 0.0.0.0/0
+        Description: "HTTPS to Public Internet"
+        # FARGATE service requires outbound HTTPS to download image from ECR
+
+
+  # Your account MUST contain the "AWSServiceRoleForECS" Service Roll that permits trusted
+  # entity "ecs.amazonaws.com" to access AWS managed service "AmazonECSServiceRolePolicy"
+  # before CloudFormation can create a FARGATE service.
+
+  # If your account does NOT contain the "AWSServiceRoleForECS" Service Roll, you must go to the
+  # AWS Web Console, manually create an ECS service that uses FARGATE, then delete that service.
+
+Outputs:
+
+  ################################################################################
+  # ECS TASKS
+#  TaskApp:
+#    Description: Django App (EC2) Task Definition
+#    Value: !Ref AppTask
+
+
+  ################################################################################
+  # ECS CLUSTER
+#  ECSCluster:
+#    Description: A reference to the ECS cluster
+#    Value: !Ref ECSCluster
+#
+#  ECSServiceAutoScalingRole:
+#    Description: A reference to ECS service auto scaling role
+#    Value: !GetAtt ECSServiceAutoScalingRole.Arn
+#
+#  ECSAutoScalingGroup:
+#    Description: A reference to ECS AutoScaling Group Name
+#    Value: !Ref ECSAutoScalingGroup
+
+
+  ################################################################################
+  # ALB
+  ALBEndpointURL:
+    Description: Django Application Load Balancer Endpoint URL
+    Value: !GetAtt ALBDjango.DNSName
+
+#  ALBTargetGroupARN:
+#    Description: Django Load Balancing Target Group ARN
+#    Value: !Ref ALBTargetGroup

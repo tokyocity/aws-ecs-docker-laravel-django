@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Django RDS PostgreSQL Database Instance
+
+Parameters:
+  DBInstanceClass:
+    Type: String
+    Default: db.t2.micro
+    AllowedValues:
+      - db.t2.micro
+      - db.t2.small
+      - db.t2.medium
+    Description: Enter db.t2.micro, db.t2.small, or db.t2.medium. Default is db.t2.micro.
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 16384
+    Description: Allocated Storage (20 to 16384 GB)
+  DBInstanceIdentifier:
+    Type: String
+    Default: "django-demo"
+    Description: Database Instance Name
+  DBName:
+    Type: String
+    Default: "django"
+    Description: Database Name
+  DBMasterUsername:
+    Type: String
+    Default: "django"
+    Description: Database Master Username
+  DBMasterUserPassword:
+    Type: String
+    Default: "password"
+    Description: Database Master User Password
+
+  VPC:
+    Description: Choose which VPC this RDS instance should be deployed to
+    Type: AWS::EC2::VPC::Id
+  VPCSubnets:
+    Description: Choose which VPC subnets this RDS instance can be deployed to
+    Type: List<AWS::EC2::Subnet::Id>
+
+Resources:
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId:
+        Ref: VPC
+      GroupDescription: Inbound and Outbound rules for RDS PostgreSQL Service
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '5432'
+        ToPort: '5432'
+        CidrIp: 0.0.0.0/0
+        Description: "PostgreSQL from Public Internet"
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      SubnetIds: !Ref VPCSubnets
+      DBSubnetGroupDescription: "Subnet Group for Django DB Instance(s)"
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Ref DBInstanceIdentifier
+      DBName: !Ref DBName
+      StorageType: "gp2"
+      AllocatedStorage: !Ref DBAllocatedStorage
+      DBInstanceClass: !Ref DBInstanceClass
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      Engine: "postgres"
+      EngineVersion: "10.4"
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterUserPassword
+      # WARNING: DB Instance is Publicly Accessible
+      # Production DB Instances should set Publicly Accessible to false
+      PubliclyAccessible: true
+      # WARNING: DB Instance allows incoming PostgreSQL (5432/tcp) from ANY IP
+      # Production DB Instances should restrict access to certain IP ranges or Security Groups
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+    # CloudFormation will take snapshot of DB Instance when deleting this stack
+    DeletionPolicy: "Snapshot"
+
+Outputs:
+
+  EndpointAddress:
+    Description: Endpoint Address of the RDS PostgreSQL Database Instance
+    Value:
+      Fn::GetAtt:
+      - DBInstance
+      - Endpoint.Address
+      # django-demo.a1b2c3d4e5f6.us-east-1.rds.amazonaws.com
+
+  EndpointPort:
+    Description: Endpoint Port of the RDS PostgreSQL Database Instance
+    Value:
+      Fn::GetAtt:
+      - DBInstance
+      - Endpoint.Port
+      # 5432
