@@ -22,6 +22,14 @@ RUN apt-get -q update && apt-get -q install -y --no-install-recommends \
 # Enable Apache2 rewrite (only needed by app servers)
 RUN a2enmod rewrite
 
+# Enable Apache2 remoteip
+RUN a2enmod remoteip
+
+# VirtulHost Setting
+RUN rm -f /etc/apache2/sites-enabled/000-default.conf
+COPY ./config/000-default.conf /etc/apache2/sites-available/000-default.conf
+RUN ln -s /etc/apache2/sites-available/000-default.conf /etc/apache2/sites-enabled/000-default.conf
+
 # Install PHP dependencies. Must copy app code before we build autoloader or run post install scripts.
 # Note: Vendor files change less frequently than our application code, so we want to make vendor files cacheable.
 RUN curl -sS https://getcomposer.org/installer | \
